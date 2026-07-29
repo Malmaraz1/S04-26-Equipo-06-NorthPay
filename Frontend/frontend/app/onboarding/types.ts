@@ -1,15 +1,21 @@
 export type OnboardingData = {
-  fullName: string;
+  firstName: string;
+  lastName: string;
   email: string;
   phone: string;
+  country: string;
+  address: string;
   documentName: string;
+  documentType: string;
+  dniNumber: string;
   contractAccepted: boolean;
   paymentMethod: string;
   paymentDetails: {
-    bankName?: string;
-    accountNumber?: string;
-    accountType?: string;
-    walletAlias?: string;
+    platform?: string;
+    walletEmail?: string;
+    network?: string;
+    walletAddress?: string;
   };
+  isPaymentVerified: boolean;
   verificationNotes: string;
 };

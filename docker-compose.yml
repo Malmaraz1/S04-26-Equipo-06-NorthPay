@@ -33,15 +33,20 @@ services:
       SPRING_DATASOURCE_USERNAME: ${DB_USERNAME}
       SPRING_DATASOURCE_PASSWORD: ${DB_PASSWORD}
       JWT_SECRET: ${JWT_SECRET}
+      MAIL_USERNAME: ${MAIL_USERNAME}
+      MAIL_PASSWORD: ${MAIL_PASSWORD}
     ports:
       - "8080:8080"
     networks:
       - northpay-network
+    volumes:
+      - ./Backend:/app
 
   frontend:
     build:
       context: ./Frontend/frontend
       dockerfile: Dockerfile
+      target: deps
       args:
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL}
     container_name: northpay-frontend
@@ -52,6 +57,14 @@ services:
       - "3000:3000"
     networks:
       - northpay-network
+    volumes:
+      - ./Frontend/frontend:/app  
+      - /app/node_modules  
+      - /app/.next
+    environment:
+      - WATCHPACK_POLLING=true
+      - CHOKIDAR_USEPOLLING=true
+    command: npx next dev --webpack --hostname 0.0.0.0
 
 networks:
   northpay-network:

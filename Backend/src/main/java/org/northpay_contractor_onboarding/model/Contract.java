@@ -1,10 +1,14 @@
 package org.northpay_contractor_onboarding.model;
 
+import jakarta.persistence.*;
 import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
+import jakarta.persistence.JoinColumn;
+import jakarta.persistence.OneToOne;
 import lombok.*;
+import org.northpay_contractor_onboarding.enums.ContractStatus;
 
 import java.time.LocalDateTime;
 import java.util.UUID;
@@ -18,17 +22,24 @@ import java.util.UUID;
 public class Contract {
 
     @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    @GeneratedValue(strategy = GenerationType.UUID)
     private UUID contract_id;
 
-    private String document_url;
+    @Column(columnDefinition = "TEXT")
+    private String content;
+
+    private String signedBy;
     private Boolean signed;
+    private String contractHash;
+    private String signatureReference;
+    private LocalDateTime signedAt;
     private LocalDateTime created_at;
+    @Enumerated(EnumType.STRING)
+    private ContractStatus status = ContractStatus.PENDING_SIGNATURE ;
 
-    private UUID onboarding_id;
 
-    //@OneToOne
-    //@JoinColumn(name="onboarding_id", nullable = false)
-    //private Onboarding onboarding;
+    @OneToOne
+    @JoinColumn(name = "onboarding_id", nullable = false)
+    private Onboarding onboarding;
 
 }

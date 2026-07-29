@@ -1,24 +1,45 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect } from "react";
 import Link from "next/link";
 import { OnboardingData } from "./types";
 
-// Component imports with new names
 import PersonalData from "../../components/onboarding/PersonalData";
 import DocumentUpload from "../../components/onboarding/DocumentUpload";
 import ContractSigning from "../../components/onboarding/ContractSigning";
 import PaymentMethod from "../../components/onboarding/PaymentMethod";
 import IdentityVerification from "../../components/onboarding/IdentityVerification";
 
+type PersonalDataField = "firstName" | "lastName" | "email" | "phone" | "country" | "address";
+type PersonalDataErrors = Partial<Record<PersonalDataField, string>>;
+
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
+
+const personalDataFields: PersonalDataField[] = [
+  "firstName",
+  "lastName",
+  "email",
+  "phone",
+  "country",
+  "address",
+];
+
 const initialData: OnboardingData = {
-  fullName: "",
+  firstName: "",
+  lastName: "",
   email: "",
   phone: "",
+  country: "",
+  address: "",
   documentName: "",
+  documentType: "",
+  dniNumber: "",
   contractAccepted: false,
   paymentMethod: "",
-  paymentDetails: {},
+  paymentDetails: {
+    walletAddress: "0x71C7656EC7ab88b098defB751B7401B5f6d8976F",
+  },
+  isPaymentVerified: false,
   verificationNotes: "",
 };
 
@@ -32,83 +53,443 @@ const steps = [
 
 export default function OnboardingPage() {
   const [stepIndex, setStepIndex] = useState(0);
+  const [maxStepReached, setMaxStepReached] = useState(0);
   const [data, setData] = useState<OnboardingData>(initialData);
   const [submitted, setSubmitted] = useState(false);
+  const [approved, setApproved] = useState(false);
+  const [isProcessing, setIsProcessing] = useState(false);
   const [error, setError] = useState("");
+  const [personalDataErrors, setPersonalDataErrors] = useState<PersonalDataErrors>({});
+  const [onboardingId, setOnboardingId] = useState<string>("");
+  const [onboardingStatus, setOnboardingStatus] = useState<string>("");
+
+  useEffect(() => {
+    const saved = sessionStorage.getItem("onboarding_progress");
+    console.log("Loaded onboarding progress:", saved);
+
+    if (saved) {
+      try {
+        const { stepIndex: savedStepIndex, data: savedData, maxStepReached: savedMaxStepReached, onboardingId: savedOnboardingId } =
+          JSON.parse(saved);
+
+        // eslint-disable-next-line react-hooks/set-state-in-effect
+        setStepIndex(savedStepIndex);
+        setData(savedData);
+        setMaxStepReached(savedMaxStepReached);
+        console.log("Loaded onboarding ID from sessionStorage:", savedOnboardingId);
+        if (savedOnboardingId && savedOnboardingId !== "") {
+          setOnboardingId(savedOnboardingId);
+
+          fetch(`${API_URL}/api/v1/onboarding/${savedOnboardingId}`, {}).then(res => res.json()).then(onboarding => {
+            setApproved(onboarding.status == "APPROVED");
+            setOnboardingStatus(onboarding.status);
+            setSubmitted(false);
+            
+            if (onboarding.currentStep) {
+              const backendStep = onboarding.currentStep - 1;
+              setMaxStepReached(backendStep); // Enforce backend step
+              if (typeof savedStepIndex === "undefined" || savedStepIndex > backendStep) {
+                setStepIndex(backendStep);
+              }
+            }
+            
+            if (onboarding.personalData) {
+              setData(prev => ({
+                ...prev,
+                firstName: onboarding.personalData.name || prev.firstName,
+                lastName: onboarding.personalData.lastName || prev.lastName,
+                email: onboarding.personalData.email || prev.email,
+                phone: onboarding.personalData.phoneNumber || prev.phone,
+                country: onboarding.personalData.country || prev.country,
+                address: onboarding.personalData.address || prev.address,
+                dniNumber: onboarding.personalData.dniNumber || prev.dniNumber,
+                verificationNotes: onboarding.personalData.verificationNotes || prev.verificationNotes
+              }));
+            }
+            if (onboarding.documentData) {
+              setData(prev => ({
+                ...prev,
+                documentName: onboarding.documentData.documentName || prev.documentName,
+                documentType: onboarding.documentData.documentType || prev.documentType
+              }));
+            }
+            if (onboarding.contractData) {
+              setData(prev => ({
+                ...prev,
+                contractAccepted: onboarding.contractData.contractAccepted !== null ? onboarding.contractData.contractAccepted : prev.contractAccepted
+              }));
+            }
+            if (onboarding.paymentData) {
+              setData(prev => ({
+                ...prev,
+                paymentMethod: onboarding.paymentData.paymentMethod === "DIGITAL_PLATFORM" ? "wallet" : onboarding.paymentData.paymentMethod === "CRYPTO_CURRENCY" ? "crypto" : prev.paymentMethod,
+                paymentDetails: {
+                  ...prev.paymentDetails,
+                  platform: onboarding.paymentData.platform || prev.paymentDetails.platform,
+                  walletEmail: onboarding.paymentData.walletEmail || prev.paymentDetails.walletEmail,
+                  network: onboarding.paymentData.network || prev.paymentDetails.network,
+                  walletAddress: onboarding.paymentData.walletAddress || prev.paymentDetails.walletAddress
+                },
+                isPaymentVerified: onboarding.paymentData.isPaymentVerified !== null ? onboarding.paymentData.isPaymentVerified : prev.isPaymentVerified
+              }));
+            }
+          })
+
+        }
+      } catch (e) {
+        console.error("Error loading onboarding progress", e);
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    if (stepIndex !== 0) {
+      sessionStorage.setItem(
+        "onboarding_progress",
+        JSON.stringify({ stepIndex, data, maxStepReached, onboardingId })
+      );
+    }
+  }, [stepIndex, data, maxStepReached, onboardingId]);
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setError("");
+  }, [stepIndex]);
 
   const currentStep = steps[stepIndex];
-  const progress = useMemo(() => Math.round(((stepIndex + 1) / steps.length) * 100), [stepIndex]);
+
+  const progress = useMemo(
+    () => Math.round(((stepIndex + 1) / steps.length) * 100),
+    [stepIndex]
+  );
+
+  const isPersonalDataField = (field: keyof OnboardingData): field is PersonalDataField => {
+    return personalDataFields.includes(field as PersonalDataField);
+  };
+
+  const validatePersonalData = (currentData: OnboardingData): PersonalDataErrors => {
+    const errors: PersonalDataErrors = {};
+    const nameRegex = /^[\p{L}' -]+$/u;
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    const phoneRegex = /^[0-9+() -]+$/;
+
+    if (!currentData.firstName.trim()) {
+      errors.firstName = "First name is required.";
+    } else if (currentData.firstName.trim().length < 2) {
+      errors.firstName = "First name must be at least 2 characters.";
+    } else if (!nameRegex.test(currentData.firstName.trim())) {
+      errors.firstName = "Only letters, spaces, apostrophes, and hyphens are allowed.";
+    }
+
+    if (!currentData.lastName.trim()) {
+      errors.lastName = "Last name is required.";
+    } else if (currentData.lastName.trim().length < 2) {
+      errors.lastName = "Last name must be at least 2 characters.";
+    } else if (!nameRegex.test(currentData.lastName.trim())) {
+      errors.lastName = "Only letters, spaces, apostrophes, and hyphens are allowed.";
+    }
+
+    if (!currentData.email.trim()) {
+      errors.email = "Email is required.";
+    } else if (!emailRegex.test(currentData.email.trim())) {
+      errors.email = "Enter a valid email address.";
+    }
+
+    if (!currentData.phone.trim()) {
+      errors.phone = "Phone number is required.";
+    } else if (currentData.phone.replace(/\D/g, "").length < 8) {
+      errors.phone = "Phone number must include at least 8 digits.";
+    } else if (!phoneRegex.test(currentData.phone.trim())) {
+      errors.phone = "Only numbers, spaces, +, parentheses, and hyphens are allowed.";
+    }
+
+    if (!currentData.country.trim()) {
+      errors.country = "Country is required.";
+    }
+
+    if (!currentData.address.trim()) {
+      errors.address = "Address is required.";
+    } else if (currentData.address.trim().length > 255) {
+      errors.address = "Address must not exceed 255 characters.";
+    }
+
+    return errors;
+  };
+
+
+  const validatePersonalDataField = (
+    field: PersonalDataField,
+    value: string
+  ): string => {
+    const trimmedValue = value.trim();
+
+    if (!trimmedValue) {
+      return "This field is required.";
+    }
+
+    if (field === "firstName" || field === "lastName") {
+      const nameRegex = /^[A-Za-z\s'-]+$/;
+
+      if (trimmedValue.length < 2) {
+        return "Must be at least 2 characters.";
+      }
+
+      if (!nameRegex.test(trimmedValue)) {
+        return "Only letters, spaces, apostrophes, and hyphens are allowed.";
+      }
+    }
+
+    if (field === "email") {
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+      if (!emailRegex.test(trimmedValue)) {
+        return "Enter a valid email address.";
+      }
+    }
+
+    if (field === "phone") {
+      const phoneRegex = /^[0-9+() -]+$/;
+      const digitsOnly = trimmedValue.replace(/\D/g, "");
+
+      if (!phoneRegex.test(trimmedValue)) {
+        return "Only numbers, spaces, +, parentheses, and hyphens are allowed.";
+      }
+
+      if (digitsOnly.length < 8) {
+        return "Phone number must include at least 8 digits.";
+      }
+    }
+
+    if (field === "country") {
+      if (trimmedValue.length < 2) {
+        return "Country must be at least 2 characters.";
+      }
+    }
+
+    if (field === "address") {
+      if (trimmedValue.length > 255) {
+        return "Address must not exceed 255 characters.";
+      }
+    }
+
+    return "";
+  };
 
   const handleChange = (field: keyof OnboardingData, value: any) => {
-    setData((prev) => ({ ...prev, [field]: value }));
+    setData((prev) => ({
+      ...prev,
+      [field]: value,
+    }));
+
+    // Real-time validation for all personal data fields
+    if (isPersonalDataField(field)) {
+      const errorMsg = validatePersonalDataField(field, value);
+      setPersonalDataErrors((prev) => {
+        const newErrors = { ...prev };
+        if (errorMsg) {
+          newErrors[field] = errorMsg;
+        } else {
+          delete newErrors[field];
+        }
+        return newErrors;
+      });
+    }
+
+    if (error) setError("");
+  };
+
+
+  const submitPersonalData = async () => {
+    let currentOnboardingId = onboardingId;
+
+    // 1. Create a new onboarding if we don't have one yet
+    // TODO: add missing parameters
+    if (!currentOnboardingId) {
+      const createResponse = await fetch(`${API_URL}/api/v1/onboarding/createOnboarding`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      });
+
+      if (!createResponse.ok) {
+        throw new Error("Could not initialize the onboarding process. Please try again.");
+      }
+
+      const newOnboarding = await createResponse.json();
+      currentOnboardingId = newOnboarding.id;
+      setOnboardingId(currentOnboardingId);
+    }
+
+    // 2. Save personal data to the onboarding
+    const response = await fetch(
+      `${API_URL}/api/v1/onboarding/${currentOnboardingId}/dataPersonal`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: data.firstName.trim(),
+          lastName: data.lastName.trim(),
+          email: data.email.trim(),
+          phoneNumber: data.phone.trim(),
+          country: data.country.trim(),
+          address: data.address.trim(),
+          dniNumber: data.dniNumber?.trim() || null,
+          verificationNotes: data.verificationNotes?.trim() || null
+        }),
+      }
+    );
+
+    const result = await response.json().catch(() => null);
+
+    if (!response.ok) {
+      if (response.status === 404 || result?.message?.includes("Onboarding not found")) {
+        setOnboardingId("");
+        sessionStorage.removeItem("onboarding_progress");
+        throw new Error("Your session expired or was not found. Please click Continue again to restart.");
+      }
+
+      if (response.status === 400 && result && typeof result === "object") {
+        setPersonalDataErrors(result);
+        throw new Error("Please correct the validation errors in the form.");
+      }
+
+      if (result?.fieldErrors) {
+        setPersonalDataErrors(result.fieldErrors);
+      }
+
+      throw new Error(result?.message || "Personal data could not be saved.");
+    }
   };
 
   const handlePaymentDetailsChange = (field: string, value: string) => {
     setData((prev) => ({
       ...prev,
-      paymentDetails: { ...prev.paymentDetails, [field]: value },
+      paymentDetails: {
+        ...prev.paymentDetails,
+        [field]: value,
+      },
     }));
   };
 
   const validateStep = () => {
     if (stepIndex === 0) {
-      if (!data.fullName || !data.email || !data.phone) {
-        return "Please complete all personal data fields.";
+      const errors = validatePersonalData(data);
+      setPersonalDataErrors(errors);
+
+      if (Object.keys(errors).length > 0) {
+        return "Please review the highlighted fields.";
       }
     }
+
+
+
     if (stepIndex === 1) {
       if (!data.documentName) {
-        return "Please upload at least one document.";
+        return "Please upload your National ID or Passport.";
       }
     }
+
     if (stepIndex === 2) {
       if (!data.contractAccepted) {
         return "You must accept the contract to continue.";
       }
     }
+
     if (stepIndex === 3) {
-      if (!data.paymentMethod) {
-        return "Please select a payment method.";
+      if (!data.paymentMethod || !data.isPaymentVerified) {
+        return "PENDING_VERIFICATION";
       }
-      if (data.paymentMethod === "bank") {
-        if (!data.paymentDetails.bankName || !data.paymentDetails.accountNumber) {
-          return "Please complete the bank details.";
-        }
-        if (data.paymentDetails.accountNumber.length !== 22) {
-          return "CBU/CVU must be 22 digits long.";
-        }
-      }
-      if (data.paymentMethod === "wallet") {
-        if (!data.paymentDetails.walletAlias) {
-          return "Please enter your Wallet Alias or identifier.";
-        }
+    }
+
+    if (stepIndex === 4) {
+      if (!data.verificationNotes || !data.verificationNotes.toLowerCase().includes("verification in progress")) {
+        return "Please complete the identity verification step.";
       }
     }
     return "";
   };
 
   const handleNext = async () => {
+    // If viewing a previously completed step, just navigate forward without re-saving
+    if (stepIndex < maxStepReached && onboardingStatus !== "CHANGES_REQUESTED") {
+      setStepIndex(stepIndex + 1);
+      return;
+    }
+
     const validation = validateStep();
+
     if (validation) {
       setError(validation);
       return;
     }
+
     setError("");
+    setIsProcessing(true);
 
-    // Simulated secure submission for Step 4 (index 3)
-    if (stepIndex === 3) {
-      console.log("Sending encrypted payment data to BE-US-09...", data.paymentDetails);
-    }
+    try {
+      if (stepIndex === 0 || stepIndex === 1 || stepIndex === 4) {
+        await submitPersonalData();
+      }
 
-    if (stepIndex < steps.length - 1) {
-      setStepIndex((index) => index + 1);
-    } else {
-      setSubmitted(true);
+      if (stepIndex === 3) {
+        if (!onboardingId) throw new Error("Missing onboarding ID");
+        
+        // Define correct payload based on method
+        const paymentPayload = {
+          paymentMethodType: data.paymentMethod === "wallet" ? "DIGITAL_PLATFORM" : "CRYPTO_CURRENCY",
+          platform: data.paymentMethod === "wallet" ? data.paymentDetails.platform : null,
+          walletEmail: data.paymentMethod === "wallet" ? data.paymentDetails.walletEmail : null,
+          network: data.paymentMethod === "crypto" ? data.paymentDetails.network : null,
+          walletAddress: data.paymentMethod === "crypto" ? data.paymentDetails.walletAddress : null
+        };
+
+        const paymentRes = await fetch(`${API_URL}/api/v1/payment-method/create/${onboardingId}`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${document.cookie.split("; ").find(r => r.startsWith("returnedToken="))?.split("=")[1] ? decodeURIComponent(document.cookie.split("; ").find(r => r.startsWith("returnedToken="))?.split("=")[1]!) : ""}`
+          },
+          body: JSON.stringify(paymentPayload)
+        });
+
+        if (!paymentRes.ok) {
+          throw new Error("Could not save payment details. Please try again.");
+        }
+      }
+
+      if (stepIndex < steps.length - 1) {
+        const nextStep = stepIndex + 1;
+        setStepIndex(nextStep);
+        setMaxStepReached((prev) => Math.max(prev, nextStep));
+      } else {
+        if (onboardingId) {
+          const completeRes = await fetch(`${API_URL}/api/v1/onboarding/${onboardingId}/complete`, {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${document.cookie.split("; ").find(r => r.startsWith("returnedToken="))?.split("=")[1] ? decodeURIComponent(document.cookie.split("; ").find(r => r.startsWith("returnedToken="))?.split("=")[1]!) : ""}`
+            }
+          });
+          if (!completeRes.ok) {
+            const errorData = await completeRes.json();
+            console.log(errorData)
+            throw new Error("Failed to finalize onboarding.");
+          }
+        }
+        setSubmitted(true);
+      }
+    } catch (submitError) {
+      setError(
+        submitError instanceof Error
+          ? submitError.message
+          : "Could not save this step. Please try again."
+      );
+    } finally {
+      setIsProcessing(false);
     }
   };
 
   const handlePrevious = () => {
     setError("");
+
     if (stepIndex > 0) {
       setStepIndex((index) => index - 1);
     }
@@ -119,10 +500,17 @@ export default function OnboardingPage() {
       <div className="mx-auto max-w-5xl rounded-3xl border border-slate-200 bg-white p-8 shadow-lg shadow-slate-200/30">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <p className="text-sm font-semibold uppercase tracking-[0.24em] text-sky-600">NorthPay</p>
-            <h1 className="mt-3 text-3xl font-semibold text-slate-900 sm:text-4xl">Contractor onboarding</h1>
-            <p className="mt-2 text-slate-600">Complete the process in 5 steps and keep your activation status visible.</p>
+            <p className="text-sm font-semibold uppercase tracking-[0.24em] text-sky-600">
+              NorthPay
+            </p>
+            <h1 className="mt-3 text-3xl font-semibold text-slate-900 sm:text-4xl">
+              Contractor onboarding
+            </h1>
+            <p className="mt-2 text-slate-600">
+              Complete the process in 5 steps and keep your activation status visible.
+            </p>
           </div>
+
           <div className="rounded-3xl bg-slate-100 px-4 py-3 text-sm text-slate-700">
             Step {stepIndex + 1} of {steps.length}
           </div>
@@ -130,29 +518,70 @@ export default function OnboardingPage() {
 
         <div className="mt-8 grid gap-6 lg:grid-cols-[260px_1fr]">
           <aside className="rounded-3xl border border-slate-200 bg-slate-50 p-6">
-            <p className="text-sm font-semibold uppercase tracking-[0.24em] text-slate-500">Progress</p>
+            <p className="text-sm font-semibold uppercase tracking-[0.24em] text-slate-500">
+              Progress
+            </p>
+
             <div className="mt-4 h-3 overflow-hidden rounded-full bg-slate-200">
-              <div className="h-full rounded-full bg-sky-600" style={{ width: `${progress}%` }} />
+              <div
+                className="h-full rounded-full bg-sky-600"
+                style={{ width: `${progress}%` }}
+              />
             </div>
+
             <p className="mt-3 text-sm text-slate-600">{progress}% complete</p>
+
             <div className="mt-6 space-y-4">
-              {steps.map((title, index) => (
-                <div key={title} className="flex items-center gap-3">
-                  <span className={`flex h-9 w-9 items-center justify-center rounded-full text-sm font-semibold ${index <= stepIndex ? "bg-sky-600 text-white" : "border border-slate-300 text-slate-500"}`}>
-                    {index + 1}
-                  </span>
-                  <div>
-                    <p className="text-sm font-semibold text-slate-900">{title}</p>
-                    <p className="text-sm text-slate-500">{index < stepIndex ? "Completed" : index === stepIndex ? "Current" : "Pending"}</p>
-                  </div>
-                </div>
-              ))}
+              {steps.map((title, index) => {
+                const isClickable = index <= maxStepReached;
+                const isCurrent = index === stepIndex;
+                const isCompleted = index < stepIndex || (index < maxStepReached);
+
+                return (
+                  <button
+                    key={title}
+                    type="button"
+                    onClick={() => {
+                      if (isClickable) {
+                        setStepIndex(index);
+                      } else {
+                        setError("You cannot skip ahead. Please complete the current step first.");
+                      }
+                    }}
+                    className={`flex w-full items-center gap-3 text-left transition ${isClickable
+                        ? "cursor-pointer hover:opacity-80"
+                        : "cursor-not-allowed opacity-50"
+                      }`}
+                  >
+                    <span
+                      className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-sm font-semibold ${index <= stepIndex
+                          ? "bg-sky-600 text-white"
+                          : isClickable
+                            ? "bg-sky-100 text-sky-600"
+                            : "border border-slate-300 text-slate-500"
+                        }`}
+                    >
+                      {index + 1}
+                    </span>
+
+                    <div>
+                      <p className="text-sm font-semibold text-slate-900">{title}</p>
+                      <p className="text-sm text-slate-500">
+                        {isCompleted ? "Completed" : isCurrent ? "Current" : "Pending"}
+                      </p>
+                    </div>
+                  </button>
+                );
+              })}
             </div>
           </aside>
 
           <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
             <div className="flex flex-col gap-2">
-              <p className="text-sm uppercase tracking-[0.24em] text-slate-500">{currentStep}</p>
+              <p className="text-sm uppercase tracking-[0.24em] text-slate-500">
+                {currentStep}
+              </p>
+
               <h2 className="text-2xl font-semibold text-slate-900">
                 {submitted ? "Application Sent" : `Step ${stepIndex + 1}: ${currentStep}`}
               </h2>
@@ -162,58 +591,118 @@ export default function OnboardingPage() {
               {submitted ? (
                 <div className="rounded-3xl border border-sky-100 bg-sky-50 p-6 text-slate-800">
                   <p className="text-lg font-semibold">Done!</p>
+
                   <p className="mt-3 text-slate-600">
-                    We have received your information. Your status is now <span className="font-semibold text-slate-900">pending verification</span>. You will receive notifications as soon as there are updates.
+                    We have received your information. Your status is now{" "}
+                    <span className="font-semibold text-slate-900">
+                      pending verification
+                    </span>
+                    . You will receive notifications as soon as there are updates.
                   </p>
+
                   <div className="mt-6 flex flex-col gap-3 sm:flex-row">
-                    <Link href="/admin" className="rounded-2xl bg-slate-900 px-5 py-3 text-sm font-semibold text-white transition hover:bg-slate-700">
+                    {/* <Link
+                      href="/admin"
+                      className="rounded-2xl bg-slate-900 px-5 py-3 text-sm font-semibold text-white transition hover:bg-slate-700"
+                    >
                       Check status in operations panel
-                    </Link>
-                    <Link href="/" className="rounded-2xl border border-slate-300 px-5 py-3 text-sm font-semibold text-slate-900 transition hover:bg-slate-100">
-                      Go back home
-                    </Link>
-                  </div>
-                </div>
-              ) : (
-                <form className="space-y-8">
-                  {/* Step Components */}
-                  {stepIndex === 0 && <PersonalData data={data} onChange={handleChange} />}
-                  {stepIndex === 1 && <DocumentUpload data={data} onChange={handleChange} />}
-                  {stepIndex === 2 && <ContractSigning data={data} onChange={handleChange} />}
-                  {stepIndex === 3 && (
-                    <PaymentMethod
-                      data={data}
-                      onChange={handleChange}
-                      onPaymentDetailChange={handlePaymentDetailsChange}
-                    />
-                  )}
-                  {stepIndex === 4 && <IdentityVerification data={data} onChange={handleChange} />}
+                    </Link> */}
 
-                  {error && <p className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</p>}
+                    <Link
+                      href="/"
+                      className="rounded-2xl border border-slate-300 px-5 py-3 text-sm font-semibold text-slate-900 transition hover:bg-slate-100"
+                    >
+                            Go back home
+                          </Link>
+                        </div>
+                      </div>
+                      ) : approved ? (
+                        <div className="rounded-3xl border border-green-200 bg-green-50 p-6 text-slate-800">
+                          <p className="text-lg font-semibold">Congratulations! Your onboarding has been successfully approved</p>
+                        </div>
+                      ) : (
+                      <form className="space-y-8">
+                        <fieldset disabled={stepIndex < maxStepReached && onboardingStatus !== "CHANGES_REQUESTED"}>
+                          {stepIndex === 0 && (
+                            <PersonalData
+                              data={data}
+                              onChange={handleChange}
+                              errors={personalDataErrors}
+                            />
+                          )}
 
-                  <div className="flex flex-col gap-3 sm:flex-row sm:justify-between">
-                    <button
-                      type="button"
-                      onClick={handlePrevious}
-                      disabled={stepIndex === 0}
-                      className="rounded-3xl border border-slate-300 bg-white px-6 py-3 text-sm font-semibold text-slate-900 transition disabled:cursor-not-allowed disabled:opacity-50 hover:bg-slate-100"
-                    >
-                      Back
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleNext}
-                      className="rounded-3xl bg-sky-600 px-6 py-3 text-sm font-semibold text-white transition hover:bg-sky-700"
-                    >
-                      {stepIndex === steps.length - 1 ? "Submit application" : "Next step"}
-                    </button>
-                  </div>
-                </form>
-              )}
-            </div>
-          </section>
-        </div>
-      </div>
-    </div>
+                        {stepIndex === 1 && (
+                          <DocumentUpload data={data} onChange={handleChange} onboardingId={onboardingId || ""} />
+                        )}
+
+                        {stepIndex === 2 && (
+                          <ContractSigning data={data} onChange={handleChange} onboardingId={onboardingId || ""} />
+                        )}
+
+                        {stepIndex === 3 && (
+                          <PaymentMethod
+                            data={data}
+                            onChange={handleChange}
+                            onPaymentDetailChange={handlePaymentDetailsChange}
+                          />
+                        )}
+
+  {
+    stepIndex === 4 && (
+      <IdentityVerification data={data} onChange={handleChange} />
+    )
+  }
+  </fieldset>
+
+  {
+    error && (
+      <p className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+        {error}
+      </p>
+    )
+  }
+
+  <div className="flex flex-col gap-3 sm:flex-row sm:justify-between">
+    <button
+      type="button"
+      onClick={handlePrevious}
+      disabled={stepIndex === 0}
+      className="rounded-3xl border border-slate-300 bg-white px-6 py-3 text-sm font-semibold text-slate-900 transition disabled:cursor-not-allowed disabled:opacity-50 hover:bg-slate-100"
+    >
+      Back
+    </button>
+
+    <button
+      type="button"
+      onClick={handleNext}
+      disabled={
+        (stepIndex === 3 &&
+          (!data.paymentMethod || !data.isPaymentVerified)) ||
+        isProcessing
+      }
+      className="rounded-3xl bg-sky-600 px-6 py-3 text-sm font-semibold text-white transition hover:bg-sky-700 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
+    >
+      {isProcessing ? (
+        <>
+          <span className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" />
+          Saving...
+            </>
+          ) : (stepIndex < maxStepReached && onboardingStatus !== "CHANGES_REQUESTED") ? (
+            "Next Step"
+          ) : stepIndex === steps.length - 1 ? (
+            "Submit application"
+          ) : (
+            "Continue"
+          )}
+        </button>
+  </div>
+                </form >
+              )
+}
+            </div >
+          </section >
+        </div >
+      </div >
+    </div >
   );
 }
